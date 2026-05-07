@@ -9,7 +9,26 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 def after_install():
     """Create custom fields required by the dental clinic app."""
     create_all_custom_fields()
+    create_reports()
     frappe.db.commit()
+
+
+def create_reports():
+    """Create the Doctor Stock Ledger report if it doesn't exist."""
+    if not frappe.db.exists("Report", "Doctor Stock Ledger"):
+        report = frappe.new_doc("Report")
+        report.report_name = "Doctor Stock Ledger"
+        report.ref_doctype = "Stock Entry"
+        report.report_type = "Script Report"
+        report.is_standard = "No"
+        report.module = "Dental Clinic"
+        report.disabled = 0
+        report.insert(ignore_permissions=True)
+        # Add roles
+        for role in ["System Manager", "Nurse In Charge", "Head Nurse", "Store Keeper", "CEO"]:
+            report.append("roles", {"role": role})
+        report.save(ignore_permissions=True)
+        print("✅ Dental Clinic: Doctor Stock Ledger report created")
 
 
 def create_all_custom_fields():
