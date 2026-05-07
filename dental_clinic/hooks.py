@@ -52,10 +52,7 @@ fixtures = [
         "dt": "Role",
         "filters": [["name", "in", ["Nurse", "Nurse In Charge", "Head Nurse", "Store Keeper", "CEO", "Procurement Manager"]]]
     },
-    {
-        "dt": "Report",
-        "filters": [["name", "=", "Doctor Stock Ledger"]]
-    },
+
 ]
 
 # Override standard doctype classes (if needed)
