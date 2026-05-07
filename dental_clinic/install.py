@@ -13,7 +13,11 @@ def after_install():
 
 
 def create_all_custom_fields():
-    """Create all custom fields needed by the app on standard doctypes."""
+    """Create all custom fields needed by the app on standard doctypes.
+    
+    Note: Fields that already exist on the site will be updated (not recreated).
+    We must match the existing fieldtype exactly to avoid validation errors.
+    """
 
     custom_fields = {
         # ─── Stock Entry Custom Fields ───
@@ -21,7 +25,8 @@ def create_all_custom_fields():
             {
                 "fieldname": "custom_target_room",
                 "label": "Target Room",
-                "fieldtype": "Data",
+                "fieldtype": "Link",
+                "options": "Warehouse",
                 "insert_after": "to_warehouse",
                 "description": "Target room/warehouse for nurse acceptance",
             },
@@ -116,6 +121,9 @@ def create_all_custom_fields():
         ],
 
         # ─── Material Request Custom Fields ───
+        # Note: custom_branch, custom_doctor, custom_doctor_name, custom_room
+        # already exist on the site. We only add NEW fields that don't exist yet.
+        # Existing fields are preserved as-is.
         "Material Request": [
             {
                 "fieldname": "custom_branch",
@@ -127,7 +135,7 @@ def create_all_custom_fields():
             },
             {
                 "fieldname": "custom_doctor_name",
-                "label": "Doctor",
+                "label": "Doctor Name",
                 "fieldtype": "Link",
                 "options": "Doctor",
                 "insert_after": "custom_branch",
@@ -135,9 +143,10 @@ def create_all_custom_fields():
             {
                 "fieldname": "custom_room",
                 "label": "Room",
-                "fieldtype": "Data",
+                "fieldtype": "Link",
+                "options": "Warehouse",
                 "insert_after": "custom_doctor_name",
-                "description": "Target room for this request",
+                "description": "Room/warehouse requesting materials",
             },
             {
                 "fieldname": "custom_branch_master",
