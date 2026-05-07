@@ -1,0 +1,91 @@
+/**
+ * Dental Clinic IMS - Custom Styles
+ */
+
+/* Items Dashboard */
+#items-dashboard-app .item-row:hover {
+    background-color: #f8f9fa;
+    cursor: pointer;
+}
+
+#items-dashboard-app .dispatch-btn {
+    white-space: nowrap;
+}
+
+/* Procurement Queue */
+#procurement-queue-app .card {
+    border-left: 3px solid #5e64ff;
+}
+
+#procurement-queue-app .item-checkbox:checked + td {
+    background-color: #e8f4fd;
+}
+
+/* Material Usage */
+#material-usage-app .usage-cart {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    padding: 10px;
+}
+
+#material-usage-app .add-to-cart-btn {
+    padding: 2px 6px;
+}
+
+#material-usage-app .cart-qty-input {
+    display: inline-block;
+    text-align: center;
+}
+
+/* Nurse Acceptance */
+#nurse-acceptance-app .accept-selected-btn,
+#nurse-acceptance-app .reject-selected-btn {
+    min-width: 140px;
+}
+
+/* Procurement Details Dialog */
+.procurement-details .item-detail-section {
+    transition: background-color 0.2s;
+}
+
+.procurement-details .item-detail-section:hover {
+    background-color: #f8f9fa;
+}
+
+/* General table improvements */
+.table-sm th,
+.table-sm td {
+    vertical-align: middle;
+}
+
+/* Status indicators */
+.indicator-pill {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+/* Branch Master form - items table */
+.frappe-control[data-fieldname="items"] .grid-body .rows .grid-row .row-index {
+    font-weight: bold;
+}
+
+/* Net to buy highlighting */
+.text-danger.font-weight-bold {
+    font-weight: 600 !important;
+}
+
+/* Custom page responsive adjustments */
+@media (max-width: 768px) {
+    #items-dashboard-app .table-responsive,
+    #procurement-queue-app .table-responsive,
+    #nurse-acceptance-app .table-responsive {
+        font-size: 11px;
+    }
+
+    #material-usage-app .row > div {
+        margin-bottom: 15px;
+    }
+}
