@@ -260,8 +260,10 @@ def get_suppliers_for_items(item_codes):
     # Also get default suppliers from Item doctype
     default_suppliers = frappe.db.sql("""
         SELECT DISTINCT
-            isd.supplier, isd.supplier_name
+            isd.supplier,
+            s.supplier_name
         FROM `tabItem Supplier` isd
+        LEFT JOIN `tabSupplier` s ON isd.supplier = s.name
         WHERE isd.parent IN ({})
     """.format(", ".join(["%s"] * len(item_codes))), item_codes, as_dict=True)
 
@@ -273,7 +275,7 @@ def get_suppliers_for_items(item_codes):
         if s.supplier not in supplier_map:
             supplier_map[s.supplier] = {
                 "supplier": s.supplier,
-                "supplier_name": s.supplier_name,
+                "supplier_name": s.supplier_name or s.supplier,
                 "items_supplied": 0,
                 "last_order_date": None,
                 "is_default": True,
