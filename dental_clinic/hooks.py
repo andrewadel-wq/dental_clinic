@@ -9,6 +9,10 @@ app_version = "0.0.1"
 # Required apps
 required_apps = ["frappe", "erpnext"]
 
+# Installation hooks
+after_install = "dental_clinic.install.after_install"
+after_migrate = "dental_clinic.install.after_install"
+
 # Document Events
 # ----------------
 doc_events = {
