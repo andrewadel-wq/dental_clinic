@@ -13,6 +13,114 @@ def after_install():
     frappe.db.commit()
 
 
+DOCTOR_STOCK_LEDGER_SCRIPT = """
+import frappe
+from frappe import _
+
+def execute(filters=None):
+    columns = get_columns()
+    data = get_data(filters)
+    return columns, data
+
+def get_columns():
+    return [
+        {"label": _("Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 100},
+        {"label": _("Doctor"), "fieldname": "doctor", "fieldtype": "Link", "options": "Doctor", "width": 150},
+        {"label": _("Item Code"), "fieldname": "item_code", "fieldtype": "Link", "options": "Item", "width": 150},
+        {"label": _("Item Name"), "fieldname": "item_name", "fieldtype": "Data", "width": 200},
+        {"label": _("Transaction Type"), "fieldname": "transaction_type", "fieldtype": "Data", "width": 130},
+        {"label": _("In Qty"), "fieldname": "in_qty", "fieldtype": "Float", "width": 80},
+        {"label": _("Out Qty"), "fieldname": "out_qty", "fieldtype": "Float", "width": 80},
+        {"label": _("Balance"), "fieldname": "balance", "fieldtype": "Float", "width": 80},
+        {"label": _("PX File"), "fieldname": "px_file_number", "fieldtype": "Data", "width": 120},
+        {"label": _("Room"), "fieldname": "room", "fieldtype": "Data", "width": 120},
+        {"label": _("Stock Entry"), "fieldname": "stock_entry", "fieldtype": "Link", "options": "Stock Entry", "width": 130},
+    ]
+
+def get_data(filters):
+    conditions = "se.docstatus = 1 AND se.custom_doctor IS NOT NULL AND se.custom_doctor != ''"
+    params = []
+
+    if filters.get("doctor"):
+        conditions += " AND se.custom_doctor = %s"
+        params.append(filters["doctor"])
+
+    if filters.get("item_code"):
+        conditions += " AND sei.item_code = %s"
+        params.append(filters["item_code"])
+
+    if filters.get("from_date"):
+        conditions += " AND se.posting_date >= %s"
+        params.append(filters["from_date"])
+
+    if filters.get("to_date"):
+        conditions += " AND se.posting_date <= %s"
+        params.append(filters["to_date"])
+
+    if filters.get("branch"):
+        conditions += " AND (sei.s_warehouse LIKE %s OR sei.t_warehouse LIKE %s)"
+        branch = filters["branch"]
+        params.extend(["%" + branch + "%", "%" + branch + "%"])
+
+    entries = frappe.db.sql(\"\"\"
+        SELECT
+            se.posting_date,
+            se.custom_doctor as doctor,
+            sei.item_code,
+            sei.item_name,
+            se.stock_entry_type,
+            sei.qty,
+            sei.s_warehouse,
+            sei.t_warehouse,
+            se.name as stock_entry
+        FROM `tabStock Entry Detail` sei
+        JOIN `tabStock Entry` se ON sei.parent = se.name
+        WHERE {conditions}
+        ORDER BY se.custom_doctor, sei.item_code, se.posting_date, se.posting_time
+    \"\"\".format(conditions=conditions), params, as_dict=True)
+
+    data = []
+    balance_tracker = {}
+
+    for entry in entries:
+        key = (entry.doctor, entry.item_code)
+        if key not in balance_tracker:
+            balance_tracker[key] = 0
+
+        in_qty = 0
+        out_qty = 0
+        transaction_type = ""
+        room = ""
+
+        if entry.stock_entry_type == "Material Transfer":
+            in_qty = entry.qty
+            transaction_type = "Received"
+            room = entry.t_warehouse or ""
+        elif entry.stock_entry_type == "Material Issue":
+            out_qty = entry.qty
+            transaction_type = "Used"
+            room = entry.s_warehouse or ""
+
+        balance_tracker[key] += in_qty - out_qty
+
+        data.append({
+            "posting_date": entry.posting_date,
+            "doctor": entry.doctor,
+            "item_code": entry.item_code,
+            "item_name": entry.item_name,
+            "transaction_type": transaction_type,
+            "in_qty": in_qty if in_qty > 0 else None,
+            "out_qty": out_qty if out_qty > 0 else None,
+            "balance": balance_tracker[key],
+            "px_file_number": "",
+            "room": room,
+            "stock_entry": entry.stock_entry,
+        })
+
+    return data
+"""
+
+
 def create_reports():
     """Create the Doctor Stock Ledger report if it doesn't exist."""
     if not frappe.db.exists("Report", "Doctor Stock Ledger"):
@@ -21,14 +129,28 @@ def create_reports():
         report.ref_doctype = "Stock Entry"
         report.report_type = "Script Report"
         report.is_standard = "No"
-        report.module = "Dental Clinic"
+        report.module = "Stock"
         report.disabled = 0
-        report.insert(ignore_permissions=True)
+        report.report_script = DOCTOR_STOCK_LEDGER_SCRIPT
         # Add roles
-        for role in ["System Manager", "Nurse In Charge", "Head Nurse", "Store Keeper", "CEO"]:
+        for role in ["System Manager", "Stock Manager", "Stock User", "Store Keeper"]:
             report.append("roles", {"role": role})
+        report.insert(ignore_permissions=True)
+        print("Created Doctor Stock Ledger report")
+    else:
+        # Update existing report with the script
+        report = frappe.get_doc("Report", "Doctor Stock Ledger")
+        report.report_type = "Script Report"
+        report.is_standard = "No"
+        report.module = "Stock"
+        report.report_script = DOCTOR_STOCK_LEDGER_SCRIPT
+        # Ensure roles exist
+        existing_roles = [r.role for r in report.roles]
+        for role in ["System Manager", "Stock Manager", "Stock User", "Store Keeper"]:
+            if role not in existing_roles:
+                report.append("roles", {"role": role})
         report.save(ignore_permissions=True)
-        print("✅ Dental Clinic: Doctor Stock Ledger report created")
+        print("Updated Doctor Stock Ledger report")
 
 
 def create_all_custom_fields():
@@ -236,4 +358,4 @@ def create_all_custom_fields():
     }
 
     create_custom_fields(custom_fields, update=True)
-    print("✅ Dental Clinic: All custom fields created successfully")
+    print("Dental Clinic: All custom fields created successfully")
