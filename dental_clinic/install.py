@@ -14,110 +14,115 @@ def after_install():
 
 
 DOCTOR_STOCK_LEDGER_SCRIPT = """
-import frappe
-from frappe import _
+# Script Report: Doctor Stock Ledger
+# Compatible with Frappe v16 RestrictedPython safe_exec
+# - No import statements (frappe and _ are pre-injected)
+# - No .format() on strings (use % formatting)
+# - No augmented assignment on dict items (use simple assignment)
+# - Filters accessible via `filters` variable
+# - Output via: data = columns, result_data
 
-def execute(filters=None):
-    columns = get_columns()
-    data = get_data(filters)
-    return columns, data
+conditions = "se.docstatus = 1 AND se.custom_doctor IS NOT NULL AND se.custom_doctor != ''"
+params = []
 
-def get_columns():
-    return [
-        {"label": _("Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 100},
-        {"label": _("Doctor"), "fieldname": "doctor", "fieldtype": "Link", "options": "Doctor", "width": 150},
-        {"label": _("Item Code"), "fieldname": "item_code", "fieldtype": "Link", "options": "Item", "width": 150},
-        {"label": _("Item Name"), "fieldname": "item_name", "fieldtype": "Data", "width": 200},
-        {"label": _("Transaction Type"), "fieldname": "transaction_type", "fieldtype": "Data", "width": 130},
-        {"label": _("In Qty"), "fieldname": "in_qty", "fieldtype": "Float", "width": 80},
-        {"label": _("Out Qty"), "fieldname": "out_qty", "fieldtype": "Float", "width": 80},
-        {"label": _("Balance"), "fieldname": "balance", "fieldtype": "Float", "width": 80},
-        {"label": _("PX File"), "fieldname": "px_file_number", "fieldtype": "Data", "width": 120},
-        {"label": _("Room"), "fieldname": "room", "fieldtype": "Data", "width": 120},
-        {"label": _("Stock Entry"), "fieldname": "stock_entry", "fieldtype": "Link", "options": "Stock Entry", "width": 130},
-    ]
+if filters.get("doctor"):
+    conditions = conditions + " AND se.custom_doctor = %s"
+    params.append(filters["doctor"])
 
-def get_data(filters):
-    conditions = "se.docstatus = 1 AND se.custom_doctor IS NOT NULL AND se.custom_doctor != ''"
-    params = []
+if filters.get("item_code"):
+    conditions = conditions + " AND sei.item_code = %s"
+    params.append(filters["item_code"])
 
-    if filters.get("doctor"):
-        conditions += " AND se.custom_doctor = %s"
-        params.append(filters["doctor"])
+if filters.get("from_date"):
+    conditions = conditions + " AND se.posting_date >= %s"
+    params.append(filters["from_date"])
 
-    if filters.get("item_code"):
-        conditions += " AND sei.item_code = %s"
-        params.append(filters["item_code"])
+if filters.get("to_date"):
+    conditions = conditions + " AND se.posting_date <= %s"
+    params.append(filters["to_date"])
 
-    if filters.get("from_date"):
-        conditions += " AND se.posting_date >= %s"
-        params.append(filters["from_date"])
+if filters.get("branch"):
+    branch = filters["branch"]
+    conditions = conditions + " AND (sei.s_warehouse LIKE %s OR sei.t_warehouse LIKE %s)"
+    params.append("%" + branch + "%")
+    params.append("%" + branch + "%")
 
-    if filters.get("to_date"):
-        conditions += " AND se.posting_date <= %s"
-        params.append(filters["to_date"])
+query = \"\"\"
+    SELECT
+        se.posting_date,
+        se.custom_doctor as doctor,
+        sei.item_code,
+        sei.item_name,
+        se.stock_entry_type,
+        sei.qty,
+        sei.s_warehouse,
+        sei.t_warehouse,
+        se.name as stock_entry,
+        se.custom_px_file_number as px_file_number
+    FROM `tabStock Entry Detail` sei
+    JOIN `tabStock Entry` se ON sei.parent = se.name
+    WHERE %s
+    ORDER BY se.custom_doctor, sei.item_code, se.posting_date, se.posting_time
+\"\"\" % conditions
 
-    if filters.get("branch"):
-        conditions += " AND (sei.s_warehouse LIKE %s OR sei.t_warehouse LIKE %s)"
-        branch = filters["branch"]
-        params.extend(["%" + branch + "%", "%" + branch + "%"])
+entries = frappe.db.sql(query, params, as_dict=True)
 
-    entries = frappe.db.sql(\"\"\"
-        SELECT
-            se.posting_date,
-            se.custom_doctor as doctor,
-            sei.item_code,
-            sei.item_name,
-            se.stock_entry_type,
-            sei.qty,
-            sei.s_warehouse,
-            sei.t_warehouse,
-            se.name as stock_entry
-        FROM `tabStock Entry Detail` sei
-        JOIN `tabStock Entry` se ON sei.parent = se.name
-        WHERE {conditions}
-        ORDER BY se.custom_doctor, sei.item_code, se.posting_date, se.posting_time
-    \"\"\".format(conditions=conditions), params, as_dict=True)
+result_data = []
+balance_map = {}
 
-    data = []
-    balance_tracker = {}
+for entry in entries:
+    doctor = entry.get("doctor", "")
+    item_code = entry.get("item_code", "")
+    key = doctor + "||" + item_code
 
-    for entry in entries:
-        key = (entry.doctor, entry.item_code)
-        if key not in balance_tracker:
-            balance_tracker[key] = 0
+    if key not in balance_map:
+        balance_map[key] = 0
 
-        in_qty = 0
-        out_qty = 0
-        transaction_type = ""
-        room = ""
+    in_qty = 0
+    out_qty = 0
+    transaction_type = ""
+    room = ""
 
-        if entry.stock_entry_type == "Material Transfer":
-            in_qty = entry.qty
-            transaction_type = "Received"
-            room = entry.t_warehouse or ""
-        elif entry.stock_entry_type == "Material Issue":
-            out_qty = entry.qty
-            transaction_type = "Used"
-            room = entry.s_warehouse or ""
+    if entry.get("stock_entry_type") == "Material Transfer":
+        in_qty = entry.get("qty", 0)
+        transaction_type = "Received"
+        room = entry.get("t_warehouse", "") or ""
+    elif entry.get("stock_entry_type") == "Material Issue":
+        out_qty = entry.get("qty", 0)
+        transaction_type = "Used"
+        room = entry.get("s_warehouse", "") or ""
 
-        balance_tracker[key] += in_qty - out_qty
+    balance_map[key] = balance_map[key] + in_qty - out_qty
 
-        data.append({
-            "posting_date": entry.posting_date,
-            "doctor": entry.doctor,
-            "item_code": entry.item_code,
-            "item_name": entry.item_name,
-            "transaction_type": transaction_type,
-            "in_qty": in_qty if in_qty > 0 else None,
-            "out_qty": out_qty if out_qty > 0 else None,
-            "balance": balance_tracker[key],
-            "px_file_number": "",
-            "room": room,
-            "stock_entry": entry.stock_entry,
-        })
+    result_data.append({
+        "posting_date": entry.get("posting_date"),
+        "doctor": doctor,
+        "item_code": item_code,
+        "item_name": entry.get("item_name", ""),
+        "transaction_type": transaction_type,
+        "in_qty": in_qty if in_qty > 0 else None,
+        "out_qty": out_qty if out_qty > 0 else None,
+        "balance": balance_map[key],
+        "px_file_number": entry.get("px_file_number", ""),
+        "room": room,
+        "stock_entry": entry.get("stock_entry", ""),
+    })
 
-    return data
+columns = [
+    {"label": _("Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 100},
+    {"label": _("Doctor"), "fieldname": "doctor", "fieldtype": "Link", "options": "Doctor", "width": 150},
+    {"label": _("Item Code"), "fieldname": "item_code", "fieldtype": "Link", "options": "Item", "width": 150},
+    {"label": _("Item Name"), "fieldname": "item_name", "fieldtype": "Data", "width": 200},
+    {"label": _("Transaction Type"), "fieldname": "transaction_type", "fieldtype": "Data", "width": 130},
+    {"label": _("In Qty"), "fieldname": "in_qty", "fieldtype": "Float", "width": 80},
+    {"label": _("Out Qty"), "fieldname": "out_qty", "fieldtype": "Float", "width": 80},
+    {"label": _("Balance"), "fieldname": "balance", "fieldtype": "Float", "width": 80},
+    {"label": _("PX File"), "fieldname": "px_file_number", "fieldtype": "Data", "width": 120},
+    {"label": _("Room"), "fieldname": "room", "fieldtype": "Data", "width": 120},
+    {"label": _("Stock Entry"), "fieldname": "stock_entry", "fieldtype": "Link", "options": "Stock Entry", "width": 130},
+]
+
+data = columns, result_data
 """
 
 
