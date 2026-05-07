@@ -271,6 +271,20 @@ def create_all_custom_fields():
                 "default": "0",
                 "read_only": 1,
             },
+            {
+                "fieldname": "custom_usage_notes",
+                "label": "Usage Notes",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_dispatched_from_dashboard",
+                "description": "Notes about material usage",
+            },
+            {
+                "fieldname": "custom_px_file_number",
+                "label": "PX File Number",
+                "fieldtype": "Data",
+                "insert_after": "custom_usage_notes",
+                "description": "Patient file number for material usage tracking",
+            },
         ],
 
         # ─── Material Request Custom Fields ───
