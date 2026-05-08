@@ -270,7 +270,7 @@ class ItemsDashboard {
 
         let mr_html = '<h6 class="mt-3">Requesting Material Requests:</h6>';
         if (data.requesting_mrs.length > 0) {
-            mr_html += '<table class="table table-sm table-bordered"><thead><tr><th>MR#</th><th>Nurse</th><th>Doctor</th><th>Room</th><th class="text-right">Requested</th><th class="text-right">Remaining</th></tr></thead><tbody>';
+            mr_html += '<table class="table table-sm table-bordered"><thead><tr><th>MR#</th><th>Nurse</th><th>Doctor</th><th>Room</th><th class="text-right">Requested</th><th class="text-right">Remaining</th><th>Action</th></tr></thead><tbody>';
             data.requesting_mrs.forEach(mr => {
                 mr_html += `<tr>
                     <td><a href="/app/material-request/${mr.mr_name}">${mr.mr_name}</a></td>
@@ -279,6 +279,13 @@ class ItemsDashboard {
                     <td>${mr.room || ''}</td>
                     <td class="text-right">${mr.requested_qty}</td>
                     <td class="text-right">${mr.remaining_qty}</td>
+                    <td><button class="btn btn-xs btn-success dispatch-mr-btn"
+                        data-mr="${mr.mr_name}"
+                        data-mr-item="${mr.mr_item_name}"
+                        data-doctor="${mr.doctor || ''}"
+                        data-room="${mr.room || ''}"
+                        data-remaining="${mr.remaining_qty}"
+                    >Dispatch</button></td>
                 </tr>`;
             });
             mr_html += '</tbody></table>';
@@ -309,16 +316,33 @@ class ItemsDashboard {
                     `
                 }
             ],
-            primary_action_label: 'Dispatch',
+            primary_action_label: 'Dispatch (General)',
             primary_action: () => {
                 d.hide();
                 this.show_dispatch_dialog(item_code);
             }
         });
+
+        // Bind per-MR dispatch buttons inside the dialog
+        d.$wrapper.find('.dispatch-mr-btn').on('click', (e) => {
+            const btn = $(e.target);
+            d.hide();
+            this.show_dispatch_dialog(item_code, {
+                material_request: btn.data('mr'),
+                material_request_item: btn.data('mr-item'),
+                doctor: btn.data('doctor'),
+                target_warehouse: btn.data('room'),
+                qty: parseInt(btn.data('remaining')) || 0,
+            });
+        });
+
         d.show();
     }
 
-    show_dispatch_dialog(item_code) {
+    show_dispatch_dialog(item_code, prefill_data) {
+        // prefill_data can contain: { material_request, material_request_item, doctor, target_warehouse, qty }
+        prefill_data = prefill_data || {};
+
         const d = new frappe.ui.Dialog({
             title: `Dispatch: ${item_code}`,
             fields: [
@@ -339,6 +363,7 @@ class ItemsDashboard {
                     fieldtype: 'Link',
                     options: 'Warehouse',
                     reqd: 1,
+                    default: prefill_data.target_warehouse || '',
                     description: 'Where to send the item (room)',
                     get_query: () => ({
                         filters: { is_group: 0, company: 'Drs. Nicolas & Asp' }
@@ -350,6 +375,7 @@ class ItemsDashboard {
                     fieldname: 'qty',
                     fieldtype: 'Int',
                     reqd: 1,
+                    default: prefill_data.qty || '',
                     description: 'Whole numbers only'
                 },
                 {
@@ -357,15 +383,25 @@ class ItemsDashboard {
                     fieldname: 'doctor',
                     fieldtype: 'Link',
                     options: 'Doctor',
+                    default: prefill_data.doctor || '',
                     description: 'Doctor this dispatch is for (optional)'
                 },
                 { fieldtype: 'Section Break' },
                 {
-                    label: 'Link to Material Request (optional)',
+                    label: 'Material Request',
                     fieldname: 'material_request',
                     fieldtype: 'Link',
                     options: 'Material Request',
-                    description: 'If dispatching against a specific MR'
+                    default: prefill_data.material_request || '',
+                    description: 'Links dispatch to a specific Material Request for tracking'
+                },
+                {
+                    label: 'Material Request Item',
+                    fieldname: 'material_request_item',
+                    fieldtype: 'Data',
+                    default: prefill_data.material_request_item || '',
+                    hidden: 1,
+                    description: 'Internal: MR Item row name for moved_qty tracking'
                 }
             ],
             primary_action_label: 'Dispatch',
@@ -392,6 +428,7 @@ class ItemsDashboard {
                             qty: values.qty,
                             doctor: values.doctor || '',
                             material_request: values.material_request || '',
+                            material_request_item: values.material_request_item || '',
                         }
                     });
 

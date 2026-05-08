@@ -1,6 +1,7 @@
 """
 Post-install setup for Dental Clinic app.
-Creates all required custom fields on standard doctypes.
+Creates all required custom fields on standard doctypes,
+missing warehouses, and reports.
 """
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
@@ -9,9 +10,58 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 def after_install():
     """Create custom fields required by the dental clinic app."""
     create_all_custom_fields()
+    create_missing_warehouses()
     create_reports()
+    update_mr_workflow()
     frappe.db.commit()
 
+
+# ─── Missing Warehouses ───────────────────────────────────────────────────────
+
+def create_missing_warehouses():
+    """Create transit and special warehouses that are missing from the new system."""
+    company = "Drs. Nicolas & Asp"
+    warehouses_to_create = [
+        {
+            "warehouse_name": "MarinaWalk-Transit",
+            "parent_warehouse": "MarinaWalk - DNA",
+            "is_group": 0,
+            "company": company,
+        },
+        {
+            "warehouse_name": "UpTown-Transit",
+            "parent_warehouse": "UptownMirdif - DNA",
+            "is_group": 0,
+            "company": company,
+        },
+        {
+            "warehouse_name": "Rejected Items",
+            "parent_warehouse": "All Warehouses - DNA",
+            "is_group": 0,
+            "company": company,
+        },
+    ]
+
+    for wh_data in warehouses_to_create:
+        # Check if warehouse already exists (with or without company suffix)
+        wh_name = wh_data["warehouse_name"] + " - DNA"
+        if not frappe.db.exists("Warehouse", wh_name):
+            # Also check without suffix
+            if not frappe.db.exists("Warehouse", {"warehouse_name": wh_data["warehouse_name"]}):
+                wh = frappe.new_doc("Warehouse")
+                wh.warehouse_name = wh_data["warehouse_name"]
+                wh.parent_warehouse = wh_data["parent_warehouse"]
+                wh.is_group = wh_data["is_group"]
+                wh.company = wh_data["company"]
+                wh.insert(ignore_permissions=True)
+                print(f"Created warehouse: {wh.name}")
+            else:
+                print(f"Warehouse {wh_data['warehouse_name']} already exists")
+        else:
+            print(f"Warehouse {wh_name} already exists")
+
+
+# ─── Doctor Stock Ledger Report Script ────────────────────────────────────────
 
 DOCTOR_STOCK_LEDGER_SCRIPT = """
 # Script Report: Doctor Stock Ledger
@@ -170,6 +220,62 @@ def create_reports():
     print("Created Doctor Stock Ledger report (non-standard)")
 
 
+# ─── MR Workflow Update ────────────────────────────────────────────────────────
+
+def update_mr_workflow():
+    """
+    Ensure the Material Request Approval workflow has the
+    'Closed (Internally Fulfilled)' state.
+
+    This state is used when items are dispatched from existing stock
+    without going through the full procurement cycle.
+    """
+    workflow_name = "Material Request Approval"
+    if not frappe.db.exists("Workflow", workflow_name):
+        print(f"Workflow '{workflow_name}' not found - skipping workflow update")
+        return
+
+    wf = frappe.get_doc("Workflow", workflow_name)
+
+    # Check if the state already exists
+    existing_states = [s.state for s in wf.states]
+    if "Closed (Internally Fulfilled)" in existing_states:
+        print("Workflow state 'Closed (Internally Fulfilled)' already exists")
+        return
+
+    # Add the new state
+    wf.append("states", {
+        "state": "Closed (Internally Fulfilled)",
+        "doc_status": "1",
+        "update_field": "workflow_state",
+        "update_value": "Closed (Internally Fulfilled)",
+        "allow_edit": "Store Keeper",
+    })
+
+    # Add transitions TO this state from 'Approved'
+    wf.append("transitions", {
+        "state": "Approved",
+        "action": "Close (Internally Fulfilled)",
+        "next_state": "Closed (Internally Fulfilled)",
+        "allowed": "Store Keeper",
+        "allow_self_approval": 1,
+    })
+
+    # Also allow Head Nurse to close
+    wf.append("transitions", {
+        "state": "Approved",
+        "action": "Close (Internally Fulfilled)",
+        "next_state": "Closed (Internally Fulfilled)",
+        "allowed": "Head Nurse",
+        "allow_self_approval": 1,
+    })
+
+    wf.save(ignore_permissions=True)
+    print("Added 'Closed (Internally Fulfilled)' state to Material Request Approval workflow")
+
+
+# ─── Custom Fields ────────────────────────────────────────────────────────────
+
 def create_all_custom_fields():
     """Create all custom fields needed by the app on standard doctypes.
     
@@ -293,9 +399,6 @@ def create_all_custom_fields():
         ],
 
         # ─── Material Request Custom Fields ───
-        # Note: custom_branch, custom_doctor, custom_doctor_name, custom_room
-        # already exist on the site. We only add NEW fields that don't exist yet.
-        # Existing fields are preserved as-is.
         "Material Request": [
             {
                 "fieldname": "custom_branch",
@@ -337,12 +440,19 @@ def create_all_custom_fields():
                 "default": "0",
                 "read_only": 1,
             },
+            {
+                "fieldname": "custom_reject_reason",
+                "label": "Reject Reason",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_consolidated",
+                "description": "Reason for rejecting this Material Request",
+            },
         ],
 
         # ─── Material Request Item Custom Fields ───
         "Material Request Item": [
             {
-                "fieldname": "custom_moved_qty",
+                "fieldname": "custom_moved_quantity",
                 "label": "Moved Qty",
                 "fieldtype": "Float",
                 "insert_after": "qty",
@@ -351,12 +461,19 @@ def create_all_custom_fields():
                 "description": "Quantity already dispatched/moved",
             },
             {
-                "fieldname": "custom_remaining_qty",
+                "fieldname": "custom_remaining_quantity",
                 "label": "Remaining Qty",
                 "fieldtype": "Float",
-                "insert_after": "custom_moved_qty",
+                "insert_after": "custom_moved_quantity",
                 "read_only": 1,
                 "description": "Quantity remaining to be dispatched",
+            },
+            {
+                "fieldname": "custom_shade",
+                "label": "Shade",
+                "fieldtype": "Data",
+                "insert_after": "custom_remaining_quantity",
+                "description": "Shade information for dental items",
             },
         ],
 
@@ -372,7 +489,7 @@ def create_all_custom_fields():
                 "description": "Automatically approved (below AED 5,000 threshold)",
             },
             {
-                "fieldname": "custom_source_branch_master",
+                "fieldname": "custom_branch_master",
                 "label": "Source Branch Master",
                 "fieldtype": "Link",
                 "options": "Branch Master",
@@ -383,7 +500,47 @@ def create_all_custom_fields():
                 "fieldname": "custom_procurement_notes",
                 "label": "Procurement Notes",
                 "fieldtype": "Small Text",
-                "insert_after": "custom_source_branch_master",
+                "insert_after": "custom_branch_master",
+            },
+            {
+                "fieldname": "custom_ceo_return_reason",
+                "label": "CEO Return Reason",
+                "fieldtype": "Small Text",
+                "insert_after": "custom_procurement_notes",
+                "description": "Reason provided by CEO when sending back a PO for revision",
+            },
+        ],
+
+        # ─── Item Custom Fields (from original system) ───
+        "Item": [
+            {
+                "fieldname": "custom_shade",
+                "label": "Shade",
+                "fieldtype": "Data",
+                "insert_after": "item_name",
+                "description": "Shade information for dental items",
+            },
+            {
+                "fieldname": "custom_expiry_date",
+                "label": "Expiry Date",
+                "fieldtype": "Date",
+                "insert_after": "custom_shade",
+                "description": "Expiry date for perishable dental materials",
+            },
+            {
+                "fieldname": "custom_material_type",
+                "label": "Material Type",
+                "fieldtype": "Data",
+                "insert_after": "custom_expiry_date",
+                "description": "Material classification for dental items",
+            },
+            {
+                "fieldname": "custom_deductible",
+                "label": "Deductible",
+                "fieldtype": "Check",
+                "insert_after": "custom_material_type",
+                "default": "0",
+                "description": "Whether this item is deductible from doctor allocation",
             },
         ],
     }

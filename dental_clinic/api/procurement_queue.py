@@ -2,6 +2,19 @@ import frappe
 from frappe import _
 
 
+PROCUREMENT_ROLES = ("Store Keeper", "Procurement Manager", "System Manager")
+
+
+def _check_procurement_access():
+    """Verify the current user has procurement access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in PROCUREMENT_ROLES):
+        frappe.throw(
+            _("You do not have permission to access the Procurement Queue. Required roles: Store Keeper, Procurement Manager, or System Manager."),
+            frappe.PermissionError
+        )
+
+
 @frappe.whitelist()
 def get_procurement_queue(branch=None, status=None, search=None):
     """
@@ -13,6 +26,8 @@ def get_procurement_queue(branch=None, status=None, search=None):
     - status: filter by BM status (Approved, Ordered, etc.)
     - search: search by item code or name
     """
+    _check_procurement_access()
+
     conditions = "bm.docstatus = 1"
     params = []
 
@@ -83,6 +98,8 @@ def get_pending_po_items(branch_masters=None):
     Get all items from selected Branch Masters that need to be included in a PO.
     Used by the "Export to PO" dialog.
     """
+    _check_procurement_access()
+
     if not branch_masters:
         frappe.throw(_("Please select at least one Branch Master"))
 
@@ -138,6 +155,8 @@ def create_purchase_order(supplier, schedule_date, items, branch_masters):
         items: JSON list of items [{item_code, qty, rate, uom}]
         branch_masters: JSON list of Branch Master names to link
     """
+    _check_procurement_access()
+
     import json
 
     if isinstance(items, str):
@@ -149,6 +168,10 @@ def create_purchase_order(supplier, schedule_date, items, branch_masters):
         frappe.throw(_("No items to create Purchase Order"))
     if not supplier:
         frappe.throw(_("Supplier is required"))
+
+    # Validate: user must have PO create permission
+    if not frappe.has_permission("Purchase Order", "create"):
+        frappe.throw(_("You do not have permission to create Purchase Orders"), frappe.PermissionError)
 
     # Create PO
     po = frappe.new_doc("Purchase Order")
@@ -177,7 +200,8 @@ def create_purchase_order(supplier, schedule_date, items, branch_masters):
     if not po.items:
         frappe.throw(_("No valid items to create Purchase Order (all quantities are zero)"))
 
-    po.insert(ignore_permissions=True)
+    po.insert()
+    po.save()
 
     # Update Branch Master statuses to "Partially Ordered" or "Ordered"
     for bm_name in branch_masters:
@@ -236,6 +260,8 @@ def get_suppliers_for_items(item_codes):
     Get suggested suppliers for a list of items.
     Returns suppliers who have previously supplied these items.
     """
+    _check_procurement_access()
+
     import json
     if isinstance(item_codes, str):
         item_codes = json.loads(item_codes)

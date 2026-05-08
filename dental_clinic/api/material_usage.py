@@ -2,14 +2,75 @@ import frappe
 from frappe import _
 
 
+USAGE_ROLES = ("Nurse", "Nurse In Charge", "Head Nurse", "System Manager")
+
+
+def _check_usage_access():
+    """Verify the current user has material usage access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in USAGE_ROLES):
+        frappe.throw(
+            _("You do not have permission to access Material Usage. Required roles: Nurse, Nurse In Charge, Head Nurse, or System Manager."),
+            frappe.PermissionError
+        )
+
+
+def _get_user_allowed_rooms():
+    """
+    Get the room warehouses the current user is allowed to access.
+    Returns None if admin (all access), or a list of allowed warehouse parent groups.
+    """
+    user = frappe.session.user
+    if user == "Administrator" or "System Manager" in frappe.get_roles(user):
+        return None  # All access
+
+    # Get user's warehouse permissions
+    permissions = frappe.get_all(
+        "User Permission",
+        filters={"user": user, "allow": "Warehouse"},
+        fields=["for_value"]
+    )
+
+    if not permissions:
+        return []
+
+    return [p.for_value for p in permissions]
+
+
+def _validate_room_access(room_warehouse):
+    """Validate that the current user has access to the specified room warehouse."""
+    allowed = _get_user_allowed_rooms()
+    if allowed is None:
+        return  # Admin - all access
+
+    if not allowed:
+        frappe.throw(_("You do not have permission to access any rooms."), frappe.PermissionError)
+
+    # Check if the room's parent warehouse is in the user's allowed list
+    parent = frappe.db.get_value("Warehouse", room_warehouse, "parent_warehouse")
+    if parent not in allowed and room_warehouse not in allowed:
+        # Also check if any allowed warehouse is a parent of the room
+        for allowed_wh in allowed:
+            if frappe.db.exists("Warehouse", {"name": room_warehouse, "parent_warehouse": allowed_wh}):
+                return
+        frappe.throw(
+            _("You do not have permission to access room {0}.").format(room_warehouse),
+            frappe.PermissionError
+        )
+
+
 @frappe.whitelist()
 def get_room_stock(room_warehouse, search=None):
     """
     Get current stock in a room warehouse.
     Shows items available for consumption/usage.
     """
+    _check_usage_access()
+
     if not room_warehouse:
         frappe.throw(_("Room warehouse is required"))
+
+    _validate_room_access(room_warehouse)
 
     conditions = "b.warehouse = %s AND b.actual_qty > 0"
     params = [room_warehouse]
@@ -41,6 +102,8 @@ def get_rooms_for_branch(branch):
     Get all room warehouses for a branch.
     Room warehouses contain 'Rm' in their name.
     """
+    _check_usage_access()
+
     if not branch:
         frappe.throw(_("Branch is required"))
 
@@ -87,6 +150,8 @@ def record_usage(room_warehouse, items, px_file_number, doctor=None, notes=None)
         doctor: Doctor name (Link to Doctor doctype)
         notes: Optional notes
     """
+    _check_usage_access()
+
     import json
 
     if isinstance(items, str):
@@ -100,6 +165,8 @@ def record_usage(room_warehouse, items, px_file_number, doctor=None, notes=None)
 
     if not room_warehouse:
         frappe.throw(_("Room warehouse is required"))
+
+    _validate_room_access(room_warehouse)
 
     # Validate stock availability for all items before creating SE
     for item_data in items:
@@ -123,6 +190,8 @@ def record_usage(room_warehouse, items, px_file_number, doctor=None, notes=None)
             )
 
     # Create Stock Entry (Material Issue = consumption)
+    # Using ignore_permissions because nurses need to record usage
+    # but may not have full Stock Entry create/submit permissions
     se = frappe.new_doc("Stock Entry")
     se.stock_entry_type = "Material Issue"
     se.company = "Drs. Nicolas & Asp"
@@ -163,10 +232,13 @@ def get_usage_history(room_warehouse=None, doctor=None, px_file_number=None, fro
     Get material usage history.
     Filters by room, doctor, PX file, or date range.
     """
+    _check_usage_access()
+
     conditions = "se.stock_entry_type = 'Material Issue' AND se.docstatus = 1"
     params = []
 
     if room_warehouse:
+        _validate_room_access(room_warehouse)
         conditions += " AND sei.s_warehouse = %s"
         params.append(room_warehouse)
 
@@ -215,6 +287,11 @@ def get_frequently_used_items(room_warehouse, limit=20):
     Get frequently used items in a room (for quick-add functionality).
     Based on historical Material Issue entries.
     """
+    _check_usage_access()
+
+    if room_warehouse:
+        _validate_room_access(room_warehouse)
+
     items = frappe.db.sql("""
         SELECT
             sei.item_code,

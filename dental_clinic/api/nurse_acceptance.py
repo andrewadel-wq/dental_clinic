@@ -2,6 +2,55 @@ import frappe
 from frappe import _
 
 
+NURSE_ROLES = ("Nurse", "Nurse In Charge", "Head Nurse", "System Manager")
+
+
+def _check_nurse_access():
+    """Verify the current user has nurse acceptance access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in NURSE_ROLES):
+        frappe.throw(
+            _("You do not have permission to access Nurse Acceptance. Required roles: Nurse, Nurse In Charge, Head Nurse, or System Manager."),
+            frappe.PermissionError
+        )
+
+
+def _get_user_allowed_transit_warehouses():
+    """
+    Get the transit warehouses the current user is allowed to access.
+    Returns None if admin (all access), or a list of transit warehouse patterns.
+    """
+    user = frappe.session.user
+    if user == "Administrator" or "System Manager" in frappe.get_roles(user):
+        return None  # All access
+
+    # Get user's warehouse permissions
+    permissions = frappe.get_all(
+        "User Permission",
+        filters={"user": user, "allow": "Warehouse"},
+        fields=["for_value"]
+    )
+
+    if not permissions:
+        return []
+
+    # Map to branch transit patterns
+    branch_transit_map = {
+        "SpringsSouk - DNA": "SS-Transit",
+        "UptownMirdif - DNA": "Mir-Transit",
+        "MarinaWalk - DNA": "Mar-Transit",
+        "Jum3 - DNA": "Jum-Transit",
+    }
+
+    transit_patterns = []
+    for perm in permissions:
+        pattern = branch_transit_map.get(perm.for_value)
+        if pattern:
+            transit_patterns.append(pattern)
+
+    return transit_patterns
+
+
 @frappe.whitelist()
 def get_pending_acceptances(branch=None, room=None):
     """
@@ -10,10 +59,12 @@ def get_pending_acceptances(branch=None, room=None):
     meaning items have been dispatched but not yet accepted by the nurse.
 
     The flow is:
-    1. NIC dispatches item from Main → Transit (via Items Dashboard)
+    1. NIC dispatches item from Main -> Transit (via Items Dashboard)
     2. Item appears here as "pending acceptance"
-    3. Nurse clicks "Accept" → system creates another SE from Transit → Room
+    3. Nurse clicks "Accept" -> system creates another SE from Transit -> Room
     """
+    _check_nurse_access()
+
     conditions = """
         se.stock_entry_type = 'Material Transfer'
         AND se.docstatus = 1
@@ -33,6 +84,16 @@ def get_pending_acceptances(branch=None, room=None):
         transit_pattern = branch_warehouse_map.get(branch, f"{branch}%Transit")
         conditions += " AND sei.t_warehouse LIKE %s"
         params.append(f"%{transit_pattern}%")
+    else:
+        # Enforce branch isolation for non-admin users
+        allowed_transits = _get_user_allowed_transit_warehouses()
+        if allowed_transits is not None:
+            if not allowed_transits:
+                return []
+            # Build OR conditions for allowed transit warehouses
+            transit_conditions = " OR ".join(["sei.t_warehouse LIKE %s"] * len(allowed_transits))
+            conditions += f" AND ({transit_conditions})"
+            params.extend([f"%{t}%" for t in allowed_transits])
 
     if room:
         # Filter by intended target room (stored in custom field)
@@ -70,12 +131,14 @@ def get_pending_acceptances(branch=None, room=None):
 def accept_items(stock_entries, target_room=None):
     """
     Accept dispatched items - moves them from Transit to the target Room.
-    Creates a new Stock Entry (Material Transfer) from Transit → Room.
+    Creates a new Stock Entry (Material Transfer) from Transit -> Room.
 
     Args:
         stock_entries: JSON list of stock entry names to accept
         target_room: Override target room (if not specified, uses custom_target_room from original SE)
     """
+    _check_nurse_access()
+
     import json
 
     if isinstance(stock_entries, str):
@@ -116,7 +179,7 @@ def _accept_single_entry(se_name, override_target_room=None):
             _("No target room specified for Stock Entry {0}. Please specify a room.").format(se_name)
         )
 
-    # Create acceptance Stock Entry (Transit → Room)
+    # Create acceptance Stock Entry (Transit -> Room)
     acceptance_se = frappe.new_doc("Stock Entry")
     acceptance_se.stock_entry_type = "Material Transfer"
     acceptance_se.company = "Drs. Nicolas & Asp"
@@ -145,6 +208,8 @@ def _accept_single_entry(se_name, override_target_room=None):
             "t_warehouse": target_room,  # To room
         })
 
+    # Nurse acceptance creates SE with ignore_permissions because nurses
+    # need to complete the transfer even without full Stock Entry permissions
     acceptance_se.insert(ignore_permissions=True)
     acceptance_se.submit()
 
@@ -165,12 +230,14 @@ def _accept_single_entry(se_name, override_target_room=None):
 def reject_items(stock_entries, reason=None):
     """
     Reject dispatched items - moves them back from Transit to source warehouse.
-    Creates a reverse Stock Entry (Material Transfer) from Transit → Source.
+    Creates a reverse Stock Entry (Material Transfer) from Transit -> Source.
 
     Args:
         stock_entries: JSON list of stock entry names to reject
         reason: Reason for rejection
     """
+    _check_nurse_access()
+
     import json
 
     if isinstance(stock_entries, str):
@@ -178,6 +245,9 @@ def reject_items(stock_entries, reason=None):
 
     if not stock_entries:
         frappe.throw(_("Please select at least one item to reject"))
+
+    if not reason:
+        frappe.throw(_("A reason is required when rejecting items"))
 
     results = []
     errors = []
@@ -203,7 +273,7 @@ def _reject_single_entry(se_name, reason=None):
     if original_se.custom_accepted:
         frappe.throw(_("Stock Entry {0} has already been accepted and cannot be rejected").format(se_name))
 
-    # Create return Stock Entry (Transit → Source)
+    # Create return Stock Entry (Transit -> Source)
     return_se = frappe.new_doc("Stock Entry")
     return_se.stock_entry_type = "Material Transfer"
     return_se.company = "Drs. Nicolas & Asp"
@@ -242,6 +312,8 @@ def _reject_single_entry(se_name, reason=None):
 @frappe.whitelist()
 def get_acceptance_history(branch=None, from_date=None, to_date=None, limit=50):
     """Get history of accepted/rejected items."""
+    _check_nurse_access()
+
     conditions = """
         se.stock_entry_type = 'Material Transfer'
         AND se.docstatus = 1
@@ -260,6 +332,15 @@ def get_acceptance_history(branch=None, from_date=None, to_date=None, limit=50):
         transit_pattern = branch_warehouse_map.get(branch, f"{branch}%Transit")
         conditions += " AND sei.t_warehouse LIKE %s"
         params.append(f"%{transit_pattern}%")
+    else:
+        # Enforce branch isolation for non-admin
+        allowed_transits = _get_user_allowed_transit_warehouses()
+        if allowed_transits is not None:
+            if not allowed_transits:
+                return []
+            transit_conditions = " OR ".join(["sei.t_warehouse LIKE %s"] * len(allowed_transits))
+            conditions += f" AND ({transit_conditions})"
+            params.extend([f"%{t}%" for t in allowed_transits])
 
     if from_date:
         conditions += " AND se.posting_date >= %s"

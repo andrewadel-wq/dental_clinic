@@ -227,20 +227,24 @@ class ProcurementQueue {
     }
 
     show_export_dialog() {
-        // Get selected items
+        // Get selected items - MUST have explicit selection
         let selected = [];
         let branch_masters = new Set();
 
         if (this.selected_items.size === 0) {
-            // If nothing selected, use all items
-            selected = this.items;
-            this.items.forEach(item => branch_masters.add(item.branch_master));
-        } else {
-            this.selected_items.forEach(idx => {
-                selected.push(this.items[idx]);
-                branch_masters.add(this.items[idx].branch_master);
+            // Require explicit selection to prevent accidental mass PO creation
+            frappe.msgprint({
+                title: 'No Items Selected',
+                message: 'Please select the items you want to include in the Purchase Order by checking the boxes in the table. Use the top checkbox to select all if needed.',
+                indicator: 'orange'
             });
+            return;
         }
+
+        this.selected_items.forEach(idx => {
+            selected.push(this.items[idx]);
+            branch_masters.add(this.items[idx].branch_master);
+        });
 
         if (selected.length === 0) {
             frappe.msgprint('No items to export. Please load the queue first.');

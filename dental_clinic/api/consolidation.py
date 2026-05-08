@@ -10,6 +10,19 @@ from dental_clinic.utils.consolidation import (
 )
 
 
+CONSOLIDATION_ROLES = ("Store Keeper", "Procurement Manager", "Nurse In Charge", "Head Nurse", "System Manager")
+
+
+def _check_consolidation_access():
+    """Verify the current user has consolidation access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in CONSOLIDATION_ROLES):
+        frappe.throw(
+            _("You do not have permission to access Consolidation functions."),
+            frappe.PermissionError
+        )
+
+
 @frappe.whitelist()
 def consolidate_branch_mrs(branch, posting_date=None):
     """
@@ -24,6 +37,8 @@ def consolidate_branch_mrs(branch, posting_date=None):
     5. Group items by item_code, summing quantities
     6. Refresh stock levels
     """
+    _check_consolidation_access()
+
     if not branch:
         frappe.throw(_("Branch is required"))
 
@@ -161,6 +176,8 @@ def refresh_branch_master_stock(branch_master):
     Refresh stock levels for a Branch Master.
     Called by the "Refresh Stock Levels" button.
     """
+    _check_consolidation_access()
+
     bm = frappe.get_doc("Branch Master", branch_master)
     refresh_stock_levels(bm)
     bm.save(ignore_permissions=True)
@@ -178,6 +195,8 @@ def reconsolidate_branch_master(branch_master):
     Re-consolidate a Branch Master from scratch.
     Fetches ALL approved MRs for the branch and rebuilds the items table.
     """
+    _check_consolidation_access()
+
     bm = frappe.get_doc("Branch Master", branch_master)
 
     if bm.docstatus != 0:
@@ -265,6 +284,8 @@ def get_consolidation_status():
     Get consolidation status for all branches.
     Shows which branches have pending MRs that haven't been consolidated.
     """
+    _check_consolidation_access()
+
     branches = frappe.get_all("Branch", fields=["name"])
     status = []
 

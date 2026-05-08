@@ -2,6 +2,79 @@ import frappe
 from frappe import _
 
 
+DASHBOARD_ROLES = ("Store Keeper", "Nurse In Charge", "Head Nurse", "System Manager")
+
+
+def _check_dashboard_access():
+    """Verify the current user has Items Dashboard access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in DASHBOARD_ROLES):
+        frappe.throw(
+            _("You do not have permission to access the Items Dashboard."),
+            frappe.PermissionError
+        )
+
+
+def _get_user_allowed_branches():
+    """
+    Get the branches the current user is allowed to access.
+    Returns a list of branch codes, or None if user is admin (all access).
+    """
+    user = frappe.session.user
+    if user == "Administrator" or "System Manager" in frappe.get_roles(user):
+        return None  # All access
+
+    # Get user's warehouse permissions
+    permissions = frappe.get_all(
+        "User Permission",
+        filters={"user": user, "allow": "Warehouse"},
+        fields=["for_value"]
+    )
+
+    if not permissions:
+        # Also check Branch-level user permissions
+        branch_perms = frappe.get_all(
+            "User Permission",
+            filters={"user": user, "allow": "Branch"},
+            fields=["for_value"]
+        )
+        if branch_perms:
+            return [p.for_value for p in branch_perms]
+        return []
+
+    # Map warehouses to branches
+    branches = []
+    for perm in permissions:
+        branch = _warehouse_to_branch(perm.for_value)
+        if branch and branch not in branches:
+            branches.append(branch)
+
+    return branches
+
+
+def _enforce_branch_filter(branch, allowed_branches):
+    """
+    Enforce branch isolation. If user specifies a branch, validate it.
+    If user doesn't specify, restrict to their allowed branches.
+    Returns the branch filter value or raises an error.
+    """
+    if allowed_branches is None:
+        # Admin - no restriction
+        return branch
+
+    if branch:
+        # User specified a branch - validate they have access
+        if branch not in allowed_branches:
+            frappe.throw(
+                _("You do not have permission to access branch {0}").format(branch),
+                frappe.PermissionError
+            )
+        return branch
+
+    # No branch specified - return None but we'll filter in the query
+    return None
+
+
 @frappe.whitelist()
 def get_items_view(branch=None, search=None):
     """
@@ -9,7 +82,13 @@ def get_items_view(branch=None, search=None):
     Shows: Item Code, Item Name, Total Requested Qty, Moved Qty, Remaining Qty, MR Count.
 
     Filters by branch (for NIC role) or shows all (for Store Keeper/Head Nurse).
+    Enforces server-side branch isolation based on user permissions.
     """
+    _check_dashboard_access()
+
+    allowed_branches = _get_user_allowed_branches()
+    branch = _enforce_branch_filter(branch, allowed_branches)
+
     conditions = """
         mr.workflow_state IN ('Approved', 'Pending Head Nurse Review', 'Pending NIC Review', 'Pending Procurement')
         AND mr.docstatus IN (0, 1)
@@ -21,6 +100,14 @@ def get_items_view(branch=None, search=None):
     if branch:
         conditions += " AND mr.custom_branch = %s"
         params.append(branch)
+    elif allowed_branches is not None and allowed_branches:
+        # Non-admin without specific branch filter - restrict to their branches
+        placeholders = ", ".join(["%s"] * len(allowed_branches))
+        conditions += f" AND mr.custom_branch IN ({placeholders})"
+        params.extend(allowed_branches)
+    elif allowed_branches is not None and not allowed_branches:
+        # User has no branch access - return empty
+        return []
 
     if search:
         conditions += " AND (mri.item_code LIKE %s OR mri.item_name LIKE %s)"
@@ -56,7 +143,13 @@ def get_rooms_view(branch=None):
     """
     Get rooms view - grouped by target warehouse/room.
     Shows: Room Name, MR Count, Items Count, Branch.
+    Enforces server-side branch isolation.
     """
+    _check_dashboard_access()
+
+    allowed_branches = _get_user_allowed_branches()
+    branch = _enforce_branch_filter(branch, allowed_branches)
+
     conditions = """
         mr.workflow_state IN ('Approved', 'Pending Head Nurse Review', 'Pending NIC Review', 'Pending Procurement')
         AND mr.docstatus IN (0, 1)
@@ -67,6 +160,12 @@ def get_rooms_view(branch=None):
     if branch:
         conditions += " AND mr.custom_branch = %s"
         params.append(branch)
+    elif allowed_branches is not None and allowed_branches:
+        placeholders = ", ".join(["%s"] * len(allowed_branches))
+        conditions += f" AND mr.custom_branch IN ({placeholders})"
+        params.extend(allowed_branches)
+    elif allowed_branches is not None and not allowed_branches:
+        return []
 
     rooms = frappe.db.sql("""
         SELECT
@@ -92,6 +191,11 @@ def get_item_detail(item_code, branch=None):
     Get detailed information for a specific item.
     Shows: Available stock per warehouse, all MRs requesting this item.
     """
+    _check_dashboard_access()
+
+    allowed_branches = _get_user_allowed_branches()
+    branch = _enforce_branch_filter(branch, allowed_branches)
+
     # Get stock in all warehouses
     stock_by_warehouse = frappe.db.sql("""
         SELECT
@@ -114,6 +218,10 @@ def get_item_detail(item_code, branch=None):
     if branch:
         conditions += " AND mr.custom_branch = %s"
         params.append(branch)
+    elif allowed_branches is not None and allowed_branches:
+        placeholders = ", ".join(["%s"] * len(allowed_branches))
+        conditions += f" AND mr.custom_branch IN ({placeholders})"
+        params.extend(allowed_branches)
 
     requesting_mrs = frappe.db.sql("""
         SELECT
@@ -166,6 +274,16 @@ def dispatch_item(item_code, source_warehouse, target_warehouse, qty, doctor=Non
         material_request: Source MR name (optional, for tracking)
         material_request_item: Source MR Item name (optional, for moved_qty update)
     """
+    _check_dashboard_access()
+
+    # Additional check: only Store Keeper and System Manager can dispatch
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in ("Store Keeper", "System Manager")):
+        frappe.throw(
+            _("Only Store Keepers can dispatch items from the dashboard."),
+            frappe.PermissionError
+        )
+
     qty = int(float(qty))
     if qty <= 0:
         frappe.throw(_("Quantity must be a positive whole number"))
@@ -181,11 +299,9 @@ def dispatch_item(item_code, source_warehouse, target_warehouse, qty, doctor=Non
         )
 
     # Determine if we should use transit warehouse (for Nurse Acceptance flow)
-    # Check if target is a room warehouse (contains "Rm" in name)
     use_transit = _should_use_transit(target_warehouse)
 
     if use_transit:
-        # Get the transit warehouse for the target branch
         transit_wh = _get_transit_warehouse(target_warehouse)
         if transit_wh:
             actual_target = transit_wh
@@ -194,16 +310,21 @@ def dispatch_item(item_code, source_warehouse, target_warehouse, qty, doctor=Non
     else:
         actual_target = target_warehouse
 
-    # Create Stock Entry
+    # Create Stock Entry - using user's own permissions
     se = frappe.new_doc("Stock Entry")
     se.stock_entry_type = "Material Transfer"
     se.company = "Drs. Nicolas & Asp"
+
+    # Store the intended final room for nurse acceptance
+    if use_transit and actual_target != target_warehouse:
+        se.custom_target_room = target_warehouse
 
     # Add custom fields for tracking
     if doctor:
         se.custom_doctor = doctor
     if material_request:
         se.custom_source_mr = material_request
+    se.custom_dispatched_from_dashboard = 1
 
     se.append("items", {
         "item_code": item_code,
@@ -214,6 +335,8 @@ def dispatch_item(item_code, source_warehouse, target_warehouse, qty, doctor=Non
         "material_request_item": material_request_item or None,
     })
 
+    # Use ignore_permissions only for Stock Entry creation since Store Keeper
+    # may not have submit permission on Stock Entry but should be able to dispatch
     se.insert(ignore_permissions=True)
     se.submit()
 
@@ -243,7 +366,7 @@ def _should_use_transit(warehouse):
     """Check if the target warehouse is a room (should use transit flow)."""
     if not warehouse:
         return False
-    # Room warehouses contain "Rm" in their name
+    # Room warehouses contain "Rm" or "Room" in their name
     wh_name = warehouse.lower()
     return "rm" in wh_name or "room" in wh_name
 

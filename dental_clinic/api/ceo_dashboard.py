@@ -2,6 +2,19 @@ import frappe
 from frappe import _
 
 
+CEO_ROLES = ("CEO", "System Manager")
+
+
+def _check_ceo_access():
+    """Verify the current user has CEO dashboard access."""
+    user_roles = frappe.get_roles(frappe.session.user)
+    if not any(role in user_roles for role in CEO_ROLES):
+        frappe.throw(
+            _("You do not have permission to access the CEO Dashboard. Required role: CEO or System Manager."),
+            frappe.PermissionError
+        )
+
+
 @frappe.whitelist()
 def get_procurement_details(po_name):
     """
@@ -10,6 +23,8 @@ def get_procurement_details(po_name):
 
     Called by the "Check Procurement Details" button on PO form.
     """
+    _check_ceo_access()
+
     po = frappe.get_doc("Purchase Order", po_name)
     bm_name = po.custom_branch_master
     details = []
@@ -112,9 +127,9 @@ def get_procurement_details(po_name):
                 if difference == 0:
                     status = "Exact Match"
                 elif difference > 0:
-                    status = f"+{int(difference)} Buffer"
+                    status = "+%d Buffer" % int(difference)
                 else:
-                    status = f"{int(difference)} Under"
+                    status = "%d Under" % int(difference)
 
                 item_detail["buffer_analysis"] = {
                     "total_requested": bm_item.total_requested_qty or 0,
@@ -148,6 +163,8 @@ def get_procurement_details(po_name):
 @frappe.whitelist()
 def get_item_price_history(item_code, limit=10):
     """Get purchase price history for a specific item."""
+    _check_ceo_access()
+
     history = frappe.db.sql("""
         SELECT
             poi.rate, poi.qty, poi.uom,
@@ -185,6 +202,8 @@ def get_ceo_summary():
     Get CEO overview dashboard data.
     Shows: pending approvals, recent POs, spend by branch, etc.
     """
+    _check_ceo_access()
+
     # Pending PO approvals
     pending_pos = frappe.get_all(
         "Purchase Order",
